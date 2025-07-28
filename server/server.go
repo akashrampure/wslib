@@ -246,6 +246,9 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	defer func() {
+		if r := recover(); r != nil {
+			s.logger.Printf("Recovered in handleWS: %v", r)
+		}
 		s.ShutdownConn()
 	}()
 
@@ -275,6 +278,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 				c.SetWriteDeadline(time.Now().Add(s.config.WriteTimeout))
 				if err := c.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(s.config.PingInterval)); err != nil {
 					s.logger.Printf("Ping error: %v", err)
+					s.ShutdownConn()
 					return
 				}
 			}
@@ -297,6 +301,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			} else {
 				s.logger.Printf("Client disconnected normally: %v", err)
 			}
+			s.ShutdownConn()
 			break
 		}
 
