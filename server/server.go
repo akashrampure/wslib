@@ -250,7 +250,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		if r := recover(); r != nil {
 			s.logger.Printf("Recovered in handleWS: %v", r)
 		}
-		s.ShutdownConn()
+		s.logger.Println("Exiting connection loop")
 	}()
 
 	conn.SetReadLimit(int64(s.config.MaxReadMessageSize))
