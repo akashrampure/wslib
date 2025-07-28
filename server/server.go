@@ -168,6 +168,7 @@ func (s *Server) Send(msg interface{}) error {
 	s.conn.SetWriteDeadline(time.Now().Add(s.config.WriteTimeout))
 	if err := s.conn.WriteJSON(msg); err != nil {
 		s.logger.Printf("Write error: %v", err)
+		s.ShutdownConn()
 		return err
 	}
 	return nil
