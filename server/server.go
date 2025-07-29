@@ -70,8 +70,9 @@ type Server struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 
-	startOnce    sync.Once
-	shutdownOnce sync.Once
+	startOnce          sync.Once
+	shutdownConnOnce   sync.Once
+	shutdownServerOnce sync.Once
 }
 
 func NewServer(config *WsConfig, callback *WsCallback, logger *log.Logger) *Server {
@@ -175,18 +176,20 @@ func (s *Server) Send(msg interface{}) error {
 }
 
 func (s *Server) ShutdownConn() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.shutdownConnOnce.Do(func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
 
-	if s.conn != nil {
-		_ = s.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "shutting down normally"))
-		s.logger.Println("Closing WebSocket connection...")
-		_ = s.conn.Close()
-		s.conn = nil
-		if s.callbacks.OnDisconnect != nil {
-			s.callbacks.OnDisconnect(fmt.Errorf("connection closed"))
+		if s.conn != nil {
+			_ = s.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "shutting down normally"))
+			s.logger.Println("Closing WebSocket connection...")
+			_ = s.conn.Close()
+			s.conn = nil
+			if s.callbacks.OnDisconnect != nil {
+				s.callbacks.OnDisconnect(fmt.Errorf("connection closed"))
+			}
 		}
-	}
+	})
 }
 
 func (s *Server) ShutdownServer() {
@@ -212,7 +215,7 @@ func (s *Server) ShutdownServer() {
 }
 
 func (s *Server) Shutdown() {
-	s.shutdownOnce.Do(func() {
+	s.shutdownServerOnce.Do(func() {
 		s.cancel()
 		s.ShutdownConn()
 		s.ShutdownServer()
@@ -238,6 +241,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.conn = conn
+	s.shutdownConnOnce = sync.Once{}
 	s.mu.Unlock()
 
 	s.logger.Println("Client connected")
@@ -250,6 +254,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		if r := recover(); r != nil {
 			s.logger.Printf("Recovered in handleWS: %v", r)
 		}
+		s.ShutdownConn()
 		s.logger.Println("Exiting connection loop")
 	}()
 
@@ -261,6 +266,12 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	})
 
 	go func(ctx context.Context) {
+		defer func() {
+			if r := recover(); r != nil {
+				s.logger.Printf("Recovered from ping panic: %v", r)
+			}
+		}()
+
 		ticker := time.NewTicker(s.config.PingInterval)
 		defer ticker.Stop()
 		for {
