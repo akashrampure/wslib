@@ -22,22 +22,26 @@ type ClientConfig struct {
 
 	MaxReadMessageSize int
 
-	ReconnectWait time.Duration
-	ReadTimeout   time.Duration
-	WriteTimeout  time.Duration
+	ReconnectWait    time.Duration
+	ReadTimeout      time.Duration
+	WriteTimeout     time.Duration
+	HandshakeTimeout time.Duration
 }
 
 func NewClientConfig(scheme, host, port, path string, reconnectWait int, headers http.Header) *ClientConfig {
 	return &ClientConfig{
-		Scheme:             scheme,
-		Host:               host,
-		Port:               port,
-		Path:               path,
+		Scheme:  scheme,
+		Host:    host,
+		Port:    port,
+		Path:    path,
+		Headers: headers,
+
 		MaxReadMessageSize: 10 * 1024 * 1024,
-		ReconnectWait:      time.Duration(reconnectWait) * time.Second,
-		ReadTimeout:        60 * time.Second,
-		WriteTimeout:       10 * time.Second,
-		Headers:            headers,
+
+		ReconnectWait:    time.Duration(reconnectWait) * time.Second,
+		ReadTimeout:      60 * time.Second,
+		WriteTimeout:     10 * time.Second,
+		HandshakeTimeout: 10 * time.Second,
 	}
 }
 
@@ -59,6 +63,7 @@ type Client struct {
 	writeMu   sync.Mutex
 	startOnce sync.Once
 	stopOnce  sync.Once
+	wg        sync.WaitGroup
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -109,7 +114,11 @@ func (c *Client) OnError(handler func(err error)) {
 
 func (c *Client) Start() {
 	c.startOnce.Do(func() {
-		go c.run()
+		c.wg.Add(1)
+		go func() {
+			defer c.wg.Done()
+			c.run()
+		}()
 	})
 }
 
@@ -117,6 +126,7 @@ func (c *Client) Stop() {
 	c.stopOnce.Do(func() {
 		c.cancel()
 		c.closeConn()
+		c.wg.Wait()
 		if c.callbacks.Stopped != nil {
 			c.callbacks.Stopped()
 		}
@@ -146,7 +156,12 @@ func (c *Client) run() {
 			return
 		default:
 			err := c.subscribe()
-			if err == nil {
+			if err != nil {
+				c.logger.Printf("Connection failed: %v", err)
+				if c.callbacks.OnError != nil {
+					c.callbacks.OnError(err)
+				}
+			} else {
 				pingCtx, pingCancel := context.WithCancel(c.ctx)
 				go c.ping(pingCtx)
 
@@ -156,10 +171,6 @@ func (c *Client) run() {
 			}
 
 			c.closeConn()
-
-			if err != nil {
-				c.logger.Printf("Connection closed: %v", err)
-			}
 
 			select {
 			case <-c.ctx.Done():
@@ -172,7 +183,9 @@ func (c *Client) run() {
 
 func (c *Client) subscribe() error {
 	url := fmt.Sprintf("%s://%s:%s%s", c.config.Scheme, c.config.Host, c.config.Port, c.config.Path)
-	conn, _, err := websocket.DefaultDialer.Dial(url, c.config.Headers)
+	dialer := websocket.DefaultDialer
+	dialer.HandshakeTimeout = c.config.HandshakeTimeout
+	conn, _, err := dialer.Dial(url, c.config.Headers)
 	if err != nil {
 		return err
 	}
